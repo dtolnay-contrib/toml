@@ -1,4 +1,6 @@
 use serde::de::IntoDeserializer as _;
+use std::fmt;
+use std::marker::PhantomData;
 
 use crate::de::DatetimeDeserializer;
 use crate::de::Error;
@@ -165,7 +167,20 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
             })?
         }
 
-        self.deserialize_any(visitor)
+        let span = self.input.span();
+        match self.input {
+            crate::Item::Value(crate::Value::InlineTable(v)) => {
+                v.into_deserializer().deserialize_any(visitor)
+            }
+            crate::Item::Table(v) => v.into_deserializer().deserialize_any(visitor),
+            _ => self.deserialize_any(Reject::new(&visitor)),
+        }
+        .map_err(|mut e: Self::Error| {
+            if e.span().is_none() {
+                e.set_span(span);
+            }
+            e
+        })
     }
 
     // Called when the type to deserialize is an enum, as opposed to a field in the type.
@@ -248,5 +263,30 @@ impl std::str::FromStr for ValueDeserializer {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let v = crate::parser::parse_value(s).map_err(Error::from)?;
         Ok(v.into_deserializer())
+    }
+}
+
+struct Reject<'a, E, T> {
+    expected: &'a E,
+    value: PhantomData<T>,
+}
+
+impl<'a, E, T> Reject<'a, E, T> {
+    fn new(expected: &'a E) -> Self {
+        Reject {
+            expected,
+            value: PhantomData,
+        }
+    }
+}
+
+impl<'a, 'de, V, T> serde::de::Visitor<'de> for Reject<'a, V, T>
+where
+    V: serde::de::Expected,
+{
+    type Value = T;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        self.expected.fmt(formatter)
     }
 }
